@@ -1,0 +1,49 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model EmailInsight {
+  id          String   @id @default(cuid())
+  userId      String
+  gmailId     String
+  threadId    String
+  subject     String
+  sender      String
+  receivedAt  DateTime
+  snippet     String
+  category    String
+  isUrgent    Boolean  @default(false)
+  isNoise     Boolean  @default(false)
+  summary     String
+  actionItems Json
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, gmailId])
+  @@index([userId, receivedAt])
+}
+
+model ScheduledTask {
+  id            String   @id @default(cuid())
+  userId        String
+  date          String
+  startMinutes  Int
+  endMinutes    Int
+  title         String
+  notes         String?
+  sourceEmailId String?
+  completed     Boolean  @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, date])
+}
