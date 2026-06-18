@@ -12,16 +12,16 @@ export function SyncButton() {
     setMessage(null);
     setError(null);
     startTransition(async () => {
-      try {
-        const result = await syncGmail();
-        setMessage(
-          result.synced === 0
-            ? "Already up to date."
-            : `Synced ${result.synced} new email${result.synced === 1 ? "" : "s"}.`,
-        );
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Sync failed.");
+      const result = await syncGmail();
+      if ("error" in result) {
+        setError(result.error);
+        return;
       }
+      setMessage(
+        result.synced === 0
+          ? "Already up to date."
+          : `Synced ${result.synced} new email${result.synced === 1 ? "" : "s"}.`,
+      );
     });
   }
 

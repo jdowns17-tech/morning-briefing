@@ -23,27 +23,51 @@ async function requireGmailAccess(): Promise<{ userId: string; accessToken: stri
   return { userId, accessToken: session.accessToken };
 }
 
-export async function syncGmail(): Promise<{ synced: number }> {
-  const { userId, accessToken } = await requireGmailAccess();
+export async function syncGmail(): Promise<{ synced: number } | { error: string }> {
+  // Next.js redacts thrown Server Action errors in production, so operational
+  // failures (bad token, Gmail API errors, etc.) are returned as data instead
+  // of thrown — that's the only way the real message reaches the client.
+  try {
+    const { userId, accessToken } = await requireGmailAccess();
 
-  const existing = await prisma.emailInsight.findMany({
-    where: { userId },
-    select: { gmailId: true },
-  });
-  const excludeIds = new Set(existing.map((row) => row.gmailId));
+    const existing = await prisma.emailInsight.findMany({
+      where: { userId },
+      select: { gmailId: true },
+    });
+    const excludeIds = new Set(existing.map((row) => row.gmailId));
 
-  const messages = await fetchRecentMessages(accessToken, { days: 30, excludeIds });
-  if (messages.length === 0) {
-    return { synced: 0 };
-  }
+    const messages = await fetchRecentMessages(accessToken, { days: 30, excludeIds });
+    if (messages.length === 0) {
+      return { synced: 0 };
+    }
 
-  const messagesToClassify = messages.filter((m) => !isNoiseLabelled(m.labelIds));
-  const classifications = await classifyEmails(messagesToClassify);
-  const classificationById = new Map(classifications.map((c) => [c.id, c]));
+    const messagesToClassify = messages.filter((m) => !isNoiseLabelled(m.labelIds));
+    const classifications = await classifyEmails(messagesToClassify);
+    const classificationById = new Map(classifications.map((c) => [c.id, c]));
 
-  const rows = messages.map((message) => {
-    if (isNoiseLabelled(message.labelIds)) {
-      const category = message.labelIds.includes("CATEGORY_PROMOTIONS") ? "promotion" : "newsletter";
+    const rows = messages.map((message) => {
+      if (isNoiseLabelled(message.labelIds)) {
+        const category = message.labelIds.includes("CATEGORY_PROMOTIONS") ? "promotion" : "newsletter";
+        return {
+          userId,
+          gmailId: message.id,
+          threadId: message.threadId,
+          subject: message.subject,
+          sender: message.sender,
+          receivedAt: new Date(message.receivedAt),
+          snippet: message.snippet,
+          category,
+          isUrgent: false,
+          isNoise: true,
+          summary: message.subject,
+          actionItems: [] as string[],
+        };
+      }
+
+      const classification = classificationById.get(message.id);
+      const category = classification?.category ?? "other";
+      const isNoise = category === "newsletter" || category === "promotion";
+
       return {
         userId,
         gmailId: message.id,
@@ -53,45 +77,29 @@ export async function syncGmail(): Promise<{ synced: number }> {
         receivedAt: new Date(message.receivedAt),
         snippet: message.snippet,
         category,
-        isUrgent: false,
-        isNoise: true,
-        summary: message.subject,
-        actionItems: [] as string[],
+        isUrgent: classification?.isUrgent ?? false,
+        isNoise,
+        summary: classification?.summary ?? message.subject,
+        actionItems: classification?.actionItems ?? [],
       };
-    }
+    });
 
-    const classification = classificationById.get(message.id);
-    const category = classification?.category ?? "other";
-    const isNoise = category === "newsletter" || category === "promotion";
+    await prisma.$transaction(
+      rows.map((row) =>
+        prisma.emailInsight.upsert({
+          where: { userId_gmailId: { userId: row.userId, gmailId: row.gmailId } },
+          create: row,
+          update: row,
+        }),
+      ),
+    );
 
-    return {
-      userId,
-      gmailId: message.id,
-      threadId: message.threadId,
-      subject: message.subject,
-      sender: message.sender,
-      receivedAt: new Date(message.receivedAt),
-      snippet: message.snippet,
-      category,
-      isUrgent: classification?.isUrgent ?? false,
-      isNoise,
-      summary: classification?.summary ?? message.subject,
-      actionItems: classification?.actionItems ?? [],
-    };
-  });
-
-  await prisma.$transaction(
-    rows.map((row) =>
-      prisma.emailInsight.upsert({
-        where: { userId_gmailId: { userId: row.userId, gmailId: row.gmailId } },
-        create: row,
-        update: row,
-      }),
-    ),
-  );
-
-  revalidatePath("/dashboard");
-  return { synced: rows.length };
+    revalidatePath("/dashboard");
+    return { synced: rows.length };
+  } catch (err) {
+    console.error("syncGmail failed:", err);
+    return { error: err instanceof Error ? err.message : "Sync failed." };
+  }
 }
 
 export async function createTask(input: {
